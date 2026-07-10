@@ -19,10 +19,18 @@ const path = require('path');
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-// gpt-oss-120b: strongest free model on Groq, 131k context — fits the whole
-// evolutions doc + a full harvest batch in one call.
-const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 const REPO = process.env.GITHUB_REPOSITORY || 'judeolaboboye/Nirvana-Architecture';
+
+// Model tiers, ordered by quality. Each call uses the smartest model whose
+// free-tier tokens-per-minute budget fits the request (prompt + completion).
+// TPM numbers measured empirically from Groq's x-ratelimit-limit-tokens
+// headers on this account (2026-07-10).
+const MODEL_TIERS = process.env.GROQ_MODEL
+    ? [{ id: process.env.GROQ_MODEL, tpm: Number(process.env.GROQ_TPM) || 8000 }]
+    : [
+        { id: 'openai/gpt-oss-120b', tpm: 8000 },                          // strongest reasoning
+        { id: 'meta-llama/llama-4-scout-17b-16e-instruct', tpm: 30000 },   // large-harvest fallback
+    ];
 
 const ROOT = path.join(__dirname, '..');
 const EVOLUTIONS_PATH = path.join(ROOT, 'EVOLUTIONS.md');
@@ -31,7 +39,8 @@ const CURATED_PATH = path.join(ROOT, 'CURATED.md');
 // Hard limits so a hostile fork can't flood the synthesis context
 const MAX_DISCOVERY_CHARS_PER_FORK = 4000;
 const MAX_FORK_PAGES = 10; // 10 pages x 100 = up to 1000 forks per run
-const BATCH_SIZE = 40;
+// 20 forks x 4k chars ≈ 23k tokens of harvest — fits the 30k-TPM fallback tier
+const BATCH_SIZE = 20;
 
 const DISCOVERY_MARKER = '## Hive Mind Local Discoveries';
 
@@ -138,12 +147,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function synthesize(currentEvolutions, curated, chunk) {
     const prompt = buildPrompt(currentEvolutions, curated, chunk);
-    // Groq free tier allows 8,000 tokens/minute for gpt-oss-120b, and
-    // max_tokens counts toward that budget alongside the prompt itself.
-    // Estimate prompt tokens (~3.5 chars/token) and give the completion
-    // whatever fits under the limit with headroom.
+    // Groq's free tier counts max_tokens toward the per-minute budget
+    // alongside the prompt itself. Estimate prompt tokens (~3.5 chars/token),
+    // then pick the smartest model tier whose TPM fits prompt + a useful
+    // completion (the rewritten doc needs ~2,500 tokens minimum).
     const promptTokens = Math.ceil(prompt.length / 3.5);
-    const maxTokens = Math.max(1500, Math.min(6000, 7500 - promptTokens));
+    const MIN_COMPLETION = 2500;
+    const tier = MODEL_TIERS.find(t => promptTokens + MIN_COMPLETION <= t.tpm * 0.95)
+        || MODEL_TIERS[MODEL_TIERS.length - 1];
+    const maxTokens = Math.max(MIN_COMPLETION,
+        Math.min(6000, Math.floor(tier.tpm * 0.95) - promptTokens));
+    console.log(`   model: ${tier.id} | ~${promptTokens} prompt tokens | ${maxTokens} completion budget`);
 
     for (let attempt = 1; attempt <= 2; attempt++) {
         const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -153,7 +167,7 @@ async function synthesize(currentEvolutions, curated, chunk) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                model: GROQ_MODEL,
+                model: tier.id,
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0.3,
                 max_tokens: maxTokens
