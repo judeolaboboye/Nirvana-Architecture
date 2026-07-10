@@ -121,6 +121,9 @@ SYNTHESIS RULES:
 5. Extract every genuinely valuable, generic engineering pattern from the harvested discoveries and
    integrate it into "## Core Patterns". Do not cap at 3 — absorb all valid, unique patterns. Merge
    duplicates. Keep each pattern tight: a bolded principle plus 1-3 supporting bullets.
+5b. Keep the TOTAL document under 9,000 characters. This is a prompt file loaded into AI context
+   windows — density is a feature. Distill, merge overlapping patterns, and prune the weakest
+   pattern when adding a stronger one. Never grow by accumulation.
 6. Conflict resolution: if two harvested solutions clash, keep the clearly superior one (faster,
    more secure, simpler). If both serve different valid use-cases, record both under
    "## Alternative Patterns" with a one-line "use when" for each.
@@ -131,33 +134,49 @@ SYNTHESIS RULES:
 Output ONLY the raw markdown of the upgraded EVOLUTIONS.md. No code fences, no commentary.`;
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function synthesize(currentEvolutions, curated, chunk) {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${GROQ_API_KEY}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            model: GROQ_MODEL,
-            messages: [
-                { role: 'user', content: buildPrompt(currentEvolutions, curated, chunk) }
-            ],
-            temperature: 0.3,
-            max_tokens: 16384
-        })
-    });
-    const data = await res.json();
-    if (data.error) {
-        console.error('LLM API Error:', JSON.stringify(data.error));
-        return null;
+    const prompt = buildPrompt(currentEvolutions, curated, chunk);
+    // Groq free tier allows 8,000 tokens/minute for gpt-oss-120b, and
+    // max_tokens counts toward that budget alongside the prompt itself.
+    // Estimate prompt tokens (~3.5 chars/token) and give the completion
+    // whatever fits under the limit with headroom.
+    const promptTokens = Math.ceil(prompt.length / 3.5);
+    const maxTokens = Math.max(1500, Math.min(6000, 7500 - promptTokens));
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${GROQ_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: GROQ_MODEL,
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 0.3,
+                max_tokens: maxTokens
+            })
+        });
+        const data = await res.json();
+        if (data.error) {
+            console.error('LLM API Error:', JSON.stringify(data.error));
+            if (data.error.code === 'rate_limit_exceeded' && attempt === 1) {
+                console.log('⏳ Rate limited — waiting 65s for the TPM window to reset...');
+                await sleep(65000);
+                continue;
+            }
+            return null;
+        }
+        const text = data.choices?.[0]?.message?.content;
+        if (!text) {
+            console.error('LLM returned an empty response.');
+            return null;
+        }
+        return text.replace(/^```(markdown)?\s*/i, '').replace(/```\s*$/i, '').trim();
     }
-    const text = data.choices?.[0]?.message?.content;
-    if (!text) {
-        console.error('LLM returned an empty response.');
-        return null;
-    }
-    return text.replace(/^```(markdown)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    return null;
 }
 
 function looksValid(doc) {
@@ -211,19 +230,28 @@ async function run() {
         chunks.push(discoveries.slice(i, i + BATCH_SIZE));
     }
 
+    let successfulBatches = 0;
     for (let i = 0; i < chunks.length; i++) {
         console.log(`🧠 Batch ${i + 1}/${chunks.length}...`);
+        if (i > 0) await sleep(65000); // stay inside the per-minute token budget
         const result = await synthesize(evolutions, curated, chunks[i]);
         if (looksValid(result)) {
             evolutions = result;
+            successfulBatches++;
         } else {
             console.error(`⚠️ Batch ${i + 1} produced an invalid document — skipped, keeping previous version.`);
         }
     }
 
+    if (successfulBatches === 0) {
+        console.error('❌ Every synthesis batch failed — nothing to propose. Failing the run so it is visible.');
+        process.exit(1);
+    }
+
     fs.writeFileSync(EVOLUTIONS_PATH, evolutions + '\n');
 
-    // Mark curated items as absorbed so they aren't re-synthesized forever
+    // Mark curated items as absorbed so they aren't re-synthesized forever.
+    // Only after a successful synthesis — a failed run must leave them PENDING.
     if (hasCurated) {
         fs.writeFileSync(
             CURATED_PATH,
@@ -231,7 +259,7 @@ async function run() {
         );
     }
 
-    console.log('✅ EVOLUTIONS.md upgraded. The workflow will now open a Pull Request for admin review.');
+    console.log(`✅ EVOLUTIONS.md upgraded (${successfulBatches}/${chunks.length} batches). The workflow will now open a Pull Request for admin review.`);
 }
 
 run().catch(err => {
