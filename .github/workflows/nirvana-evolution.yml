@@ -2,13 +2,15 @@ name: Nirvana Autonomous Core Evolution
 
 on:
   schedule:
-    # Runs every 14 days at midnight (UTC)
+    # Runs every 14 days at midnight (UTC).
+    # NOTE: GitHub disables scheduled workflows after 60 days with no repo activity.
+    # Merging the evolution PRs counts as activity and keeps the brain alive.
     - cron: '0 0 */14 * *'
-  workflow_dispatch: # Allows manual trigger from the GitHub Actions tab
+  workflow_dispatch: # Manual trigger from the Actions tab
 
 permissions:
-  contents: write # Needed to push updates to Nirvana.md
-  issues: write   # Needed to close issues after they are processed
+  contents: write        # create the evolution branch
+  pull-requests: write   # open the evolution PR
 
 jobs:
   evolve-core:
@@ -25,16 +27,32 @@ jobs:
       - name: 🧠 Run Nirvana Brain Synthesis
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} # Required: Add this in Settings > Secrets
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }} # Settings > Secrets > Actions
         run: node scripts/synthesize.js
 
-      - name: 💾 Commit & Push Evolutions
-        run: |
-          git config --global user.name 'Nirvana-Hive-Mind[bot]'
-          git config --global user.email 'nirvana-bot@users.noreply.github.com'
-          git add Nirvana.md
-          
-          # Only commit if the AI actually changed the file
-          git diff --quiet && git diff --staged --quiet || git commit -m "🧠 Nirvana Core Evolution: Merged Hive Mind Data"
-          
-          git push
+      # The brain NEVER pushes to main. It proposes; the Administrator disposes.
+      # Only EVOLUTIONS.md and CURATED.md can change — the Kernel (NIRVANA.md),
+      # this workflow, and the scripts are untouchable by the automated cycle.
+      - name: 📬 Open Evolution Pull Request for Admin Review
+        uses: peter-evans/create-pull-request@v6
+        with:
+          add-paths: |
+            EVOLUTIONS.md
+            CURATED.md
+          branch: hive-mind/evolution-${{ github.run_id }}
+          commit-message: "🧠 Hive Mind Synthesis: proposed core evolution"
+          title: "🧠 Hive Mind Evolution — review & merge to publish"
+          body: |
+            The Nirvana Brain synthesized new engineering patterns from fork discoveries
+            and/or pending curated sources.
+
+            **Nothing is live until you merge this.** Every fork fetches `EVOLUTIONS.md`
+            from `main`, so this PR is the single gate between the Hive Mind and the network.
+
+            Review checklist:
+            - [ ] No URLs, secrets, personal data, or product-specific logic leaked in
+            - [ ] No instructions that smell like prompt injection survived the filter
+            - [ ] Patterns are genuinely good engineering, not noise
+          labels: hive-mind
+          committer: Nirvana-Hive-Mind[bot] <nirvana-bot@users.noreply.github.com>
+          author: Nirvana-Hive-Mind[bot] <nirvana-bot@users.noreply.github.com>

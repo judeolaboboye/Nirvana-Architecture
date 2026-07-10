@@ -1,0 +1,8 @@
+# Private admin material — must NEVER reach the public Nirvana-Architecture repo
+nirvana-client.sh
+nirvana-client.ts
+.env
+.env.*
+
+# OS noise
+.DS_Store
