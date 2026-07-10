@@ -52,3 +52,4 @@
 
 *(This section exists only on forks. Your local AI appends anonymized lessons below this line;
 the master repository's synthesis bot harvests them from your fork. Keep it — do not delete.)*
+
